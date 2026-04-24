@@ -21,6 +21,8 @@ def read_sol_ls(sol_path: str, ROUNDS: int, solution_sign="s SATISFIABLE", line_
     for line in lines:
         vars = line.split()
         for var in vars:
+            if int(var) == 0:
+                continue
             v = 0 if int(var) < 0 else 1
             sol.append(v)
         if len(sol) >= var_num:

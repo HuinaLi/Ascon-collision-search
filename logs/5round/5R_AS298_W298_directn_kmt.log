@@ -1,0 +1,10 @@
+we have arrived here
+#Round: 5, #as =: 298, START:
+#Mode: direct-n
+#SearchSegment: [0, 4]
+#ExtendCheck: none (direct search over full range)
+New DC Verify Model Constructed:) var_num:4800, clause_num:29079
+START: no.1
+UNSAT at no.1
+Search runtime(excluding model build): 0.115813 s
+__________End____________ (found 0 right pair(s))

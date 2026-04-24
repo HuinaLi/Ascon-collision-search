@@ -9,14 +9,14 @@ import sys
 AsconSbox = [4, 11, 31, 20, 26, 21, 9, 2, 27, 5, 8, 18, 29, 3, 6, 28, 30, 19, 7, 14, 0, 13, 17, 24, 16, 12, 1, 25, 22, 10, 15, 23]
 
 def int2bin(a: int, n: int) -> str:
-    """int转二进制
+    """Convert an integer to a zero-padded binary string.
 
     Args:
-        a (int): 输入
-        n (int): 输出比特数
+        a (int): Input integer.
+        n (int): Target bit length.
 
     Returns:
-        str: 输出
+        str: Binary string.
     """
     return "{0:b}".format(a).rjust(n,"0")
 

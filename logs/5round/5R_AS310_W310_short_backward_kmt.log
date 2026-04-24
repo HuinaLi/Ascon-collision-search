@@ -1,0 +1,9 @@
+we have arrived here
+#Round: 5, #as =: 310, START:
+#Mode: short-then-extend
+#SearchSegment: [1, 4]
+#ExtendCheck: search last 4 rounds [1, 4], then extend/check round 0
+New DC Verify Model Constructed:) var_num:3840, clause_num:22871
+START: no.1
+Search runtime(excluding model build): 65.042488 s
+[TIMEOUT] External timeout reached at 65s (command aborted).

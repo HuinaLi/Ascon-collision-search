@@ -1,0 +1,28 @@
+we have arrived here
+#Round: 3, #as =: 216, START:
+#Mode: short-then-extend
+#SearchSegment: [0, 1]
+#ExtendCheck: search first 2 rounds [0, 1], then extend/check round 2
+New DC Verify Model Constructed:) var_num:1920, clause_num:10000
+START: no.1
+Candidate no.1 rejected and banned.
+START: no.2
+Candidate no.2 rejected and banned.
+START: no.3
+Candidate no.3 rejected and banned.
+START: no.4
+Candidate no.4 rejected and banned.
+START: no.5
+Candidate no.5 rejected and banned.
+START: no.6
+Candidate no.6 rejected and banned.
+START: no.7
+Candidate no.7 rejected and banned.
+START: no.8
+Candidate no.8 rejected and banned.
+START: no.9
+Candidate no.9 rejected and banned.
+START: no.10
+Candidate no.10 rejected and banned.
+Search runtime(excluding model build): 15.555906 s
+__________End____________ (found 0 right pair(s))

@@ -1,305 +1,245 @@
-from sage.all import *
-from sage.rings.polynomial.pbori import *
-import logging
+try:
+    from sage.all import *  # type: ignore # noqa: F401,F403
+    from sage.rings.polynomial.pbori import *  # type: ignore # noqa: F401,F403
+except ImportError:
+    # Allow pure-Python integer regression checks when Sage is unavailable.
+    def declare_ring(*_args, **_kwargs):  # type: ignore
+        raise ImportError("SageMath is required for declare_ring() and symbolic ANF operations.")
 
-# create logger
-logger = logging.getLogger('RoundF_in_ANF_form')
-logger.setLevel(logging.DEBUG)
 
-# create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
+# Default global ring used by legacy callers.
+R = None
 
-# create formatter
-formatter = logging.Formatter('c:%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Ascon round constants for p[12].
+ROUND_CONSTANTS = [0xF0, 0xE1, 0xD2, 0xC3, 0xB4, 0xA5, 0x96, 0x87, 0x78, 0x69, 0x5A, 0x4B]
 
-# add formatter to ch
-ch.setFormatter(formatter)
+LANE_SIZE = 64
+LANE_COUNT = 5
+STATE_SIZE = LANE_SIZE * LANE_COUNT
+LINEAR_SHIFTS = [(19, 28), (61, 39), (1, 6), (10, 17), (7, 41)]
 
-# add ch to logger
-logger.addHandler(ch)
+_INV_MATRIX_CACHE = {}
 
-def SingleMatrix(R, X, r0, r1):
-    """SingleMatrix transform X
 
-    Args:
-        X (list): 64 bit input
-        r0 (int): shift bits r0
-        r1 (int): shift bits r1
+def _xor2(a, b):
+    if isinstance(a, int) and isinstance(b, int):
+        return a ^ b
+    return a + b
 
-    Returns:
-        list: 64 bit output
-    """
-    Y = []
-    for i in range(64):
-        # the SingleMatrix transform
-        Y.append(X[i] + X[(i + (64 - r0)) % 64] + X[(i + (64 - r1)) % 64])
-    return Y
+
+def _xor_many(values):
+    out = values[0]
+    for v in values[1:]:
+        out = _xor2(out, v)
+    return out
+
+
+def _zero_like(x):
+    return 0 if isinstance(x, int) else x * 0
+
+
+def _build_inverse_binary_matrix(size, r0, r1):
+    """Build inverse matrix for y[i] = x[i] + x[i-r0] + x[i-r1] over GF(2)."""
+    a = [[0 for _ in range(size)] for _ in range(size)]
+    inv = [[1 if i == j else 0 for j in range(size)] for i in range(size)]
+
+    for i in range(size):
+        a[i][i] = 1
+        a[i][(i - r0) % size] ^= 1
+        a[i][(i - r1) % size] ^= 1
+
+    col = 0
+    for row in range(size):
+        pivot = None
+        for r in range(row, size):
+            if a[r][col] == 1:
+                pivot = r
+                break
+        while pivot is None and col < size - 1:
+            col += 1
+            for r in range(row, size):
+                if a[r][col] == 1:
+                    pivot = r
+                    break
+        if pivot is None:
+            raise ValueError("Linear layer matrix is not invertible.")
+
+        if pivot != row:
+            a[row], a[pivot] = a[pivot], a[row]
+            inv[row], inv[pivot] = inv[pivot], inv[row]
+
+        for r in range(size):
+            if r != row and a[r][col] == 1:
+                for c in range(col, size):
+                    a[r][c] ^= a[row][c]
+                for c in range(size):
+                    inv[r][c] ^= inv[row][c]
+        col += 1
+        if col >= size:
+            break
+    return inv
+
+
+def _get_inverse_binary_matrix(r0, r1):
+    key = (r0, r1)
+    if key not in _INV_MATRIX_CACHE:
+        _INV_MATRIX_CACHE[key] = _build_inverse_binary_matrix(LANE_SIZE, r0, r1)
+    return _INV_MATRIX_CACHE[key]
+
+
+def SingleMatrix(_R, X, r0, r1):
+    """Apply Ascon lane linear map y = x ^ rot(x,r0) ^ rot(x,r1)."""
+    y = []
+    for i in range(LANE_SIZE):
+        y.append(_xor_many([X[i], X[(i - r0) % LANE_SIZE], X[(i - r1) % LANE_SIZE]]))
+    return y
+
 
 def InvSingleMatrix(X, r0, r1):
-    """Inverse of the SingleMatrix transform
+    """Apply inverse of Ascon lane linear map."""
+    inv = _get_inverse_binary_matrix(r0, r1)
+    y = []
+    for row in inv:
+        terms = [X[j] for j, bit in enumerate(row) if bit == 1]
+        y.append(_xor_many(terms))
+    return y
 
-    Args:
-        X (list): 64 bit input
-        r0 (int): shift bits r0
-        r1 (int): shift bits r1
-
-    Returns:
-        list: 64 bit output
-    """
-    # convert X to sage matrix(use self defined ring)
-    tempX = matrix(R, 1, 64, X)
-    tempX = tempX.transpose()
-    # convert SingleMatrix to sage matrix(use GF2 ring)
-    m = matrix(GF(2), 64, 64)  # a 64*64 matrix with all zeroes
-    # construct the matrix
-    for i in range(64):
-        temp = [0] * 64
-        # set the i th, i-r0 th, i-r1 th bits to 1
-        temp[i], temp[(i - r0) % 64], temp[(i - r1) % 64] = 1, 1, 1
-        m[i] = temp
-    # compute inverse of SingleMatrix
-    m = m.inverse()
-    # compute output after inverse of SingleMatrix
-    Y = m * tempX
-    # convert sage matrix to python list
-    return Y.list()
 
 def Matrix(X):
-    """Matrix transform
+    """Apply Ascon linear layer to a 320-bit state."""
+    out = list(X)
+    for lane, (r0, r1) in enumerate(LINEAR_SHIFTS):
+        base = lane * LANE_SIZE
+        out[base : base + LANE_SIZE] = SingleMatrix(R, out[base : base + LANE_SIZE], r0, r1)
+    return out
 
-    Args:
-        X (list): 320 bit input
 
-    Returns:
-        list: 320 bit output
-    """
-    # 64 bits as a block, each block uses different transform shift r0, r1
-    X[0  : 64] = SingleMatrix(R, X[0  : 64], 19, 28)
-    X[64 :128] = SingleMatrix(R, X[64 :128], 61, 39)
-    X[128:192] = SingleMatrix(R, X[128:192], 1, 6)
-    X[192:256] = SingleMatrix(R, X[192:256], 10, 17)
-    X[256:320] = SingleMatrix(R, X[256:320], 7, 41)
-    return X
-    
 def InvMatrix(X):
-    """Inverse of the Matrix transform
+    """Apply inverse Ascon linear layer to a 320-bit state."""
+    out = list(X)
+    for lane, (r0, r1) in enumerate(LINEAR_SHIFTS):
+        base = lane * LANE_SIZE
+        out[base : base + LANE_SIZE] = InvSingleMatrix(out[base : base + LANE_SIZE], r0, r1)
+    return out
 
-    Args:
-        X (list): 320 bit input
-
-    Returns:
-        list: 320 bit output
-    """
-    X[0  : 64] = InvSingleMatrix(X[0  : 64], 19, 28)
-    X[64 :128] = InvSingleMatrix(X[64 :128], 61, 39)
-    X[128:192] = InvSingleMatrix(X[128:192], 1, 6)
-    X[192:256] = InvSingleMatrix(X[192:256], 10, 17)
-    X[256:320] = InvSingleMatrix(X[256:320], 7, 41)
-    return X
 
 def SingleSbox(y0, y1, y2, y3, y4):
-    """5-bits sbox
-
-    Args:
-        y0 (int): 1 bit input, 0 or 1
-        y1 (int): 1 bit input, 0 or 1
-        y2 (int): 1 bit input, 0 or 1
-        y3 (int): 1 bit input, 0 or 1
-        y4 (int): 1 bit input, 0 or 1
-
-    Returns:
-        list: 5 bits output
-    """
-    x0 = y4*y1 + y3 + y2*y1 + y2 + y1*y0 + y1 + y0
-    x1 = y4 + y3*y2 + y3*y1 + y3 + y2*y1 + y2 + y1 + y0
-    x2 = y4*y3 + y4 + y2 + y1 + 1
-    x3 = y4*y0 + y4 + y3*y0 + y3 + y2 + y1 + y0
-    x4 = y4*y1 + y4 + y3 + y1*y0 + y1
+    """Apply Ascon 5-bit S-box."""
+    x0 = y4 * y1 + y3 + y2 * y1 + y2 + y1 * y0 + y1 + y0
+    x1 = y4 + y3 * y2 + y3 * y1 + y3 + y2 * y1 + y2 + y1 + y0
+    x2 = y4 * y3 + y4 + y2 + y1 + 1
+    x3 = y4 * y0 + y4 + y3 * y0 + y3 + y2 + y1 + y0
+    x4 = y4 * y1 + y4 + y3 + y1 * y0 + y1
     return x0, x1, x2, x3, x4
+
 
 def InvSingleSbox(y0, y1, y2, y3, y4):
-    """inverse of the 5-bits sbox
-
-    Args:
-        y0 (int): 1 bit input, 0 or 1
-        y1 (int): 1 bit input, 0 or 1
-        y2 (int): 1 bit input, 0 or 1
-        y3 (int): 1 bit input, 0 or 1
-        y4 (int): 1 bit input, 0 or 1
-
-    Returns:
-        list: 5 bits output
-    """
-    x0 = y4*y3*y2 + y4*y3*y1 + y4*y3*y0 + y3*y2*y0 + y3*y2 + y3 + y2 + y1*y0 + y1 + 1
-    x1 = y4*y2*y0 + y4 + y3*y2 + y2*y0 + y1 + y0
-    x2 = y4*y3*y1 + y4*y3 + y4*y2*y1 + y4*y2 + y3*y1*y0 + y3*y1 + y2*y1*y0 + y2*y1 + y2 + 1 + x1
-    x3 = y4*y2*y1 + y4*y2*y0 + y4*y2 + y4*y1 + y4 + y3 + y2*y1 + y2*y0 + y1
-    x4 = y4*y3*y2 + y4*y2*y1 + y4*y2*y0 + y4*y2 + y3*y2*y0 + y3*y2 + y3 + y2*y1 + y2*y0 + y1*y0
+    """Apply inverse Ascon 5-bit S-box."""
+    x0 = y4 * y3 * y2 + y4 * y3 * y1 + y4 * y3 * y0 + y3 * y2 * y0 + y3 * y2 + y3 + y2 + y1 * y0 + y1 + 1
+    x1 = y4 * y2 * y0 + y4 + y3 * y2 + y2 * y0 + y1 + y0
+    x2 = y4 * y3 * y1 + y4 * y3 + y4 * y2 * y1 + y4 * y2 + y3 * y1 * y0 + y3 * y1 + y2 * y1 * y0 + y2 * y1 + y2 + 1 + x1
+    x3 = y4 * y2 * y1 + y4 * y2 * y0 + y4 * y2 + y4 * y1 + y4 + y3 + y2 * y1 + y2 * y0 + y1
+    x4 = y4 * y3 * y2 + y4 * y2 * y1 + y4 * y2 * y0 + y4 * y2 + y3 * y2 * y0 + y3 * y2 + y3 + y2 * y1 + y2 * y0 + y1 * y0
     return x0, x1, x2, x3, x4
 
+
 def Sbox(Y):
-    """320 bits sbox
+    """Apply Ascon S-box layer to a 320-bit state."""
+    z = [_zero_like(Y[0]) for _ in range(STATE_SIZE)]
+    for j in range(LANE_SIZE):
+        z[0 + j], z[64 + j], z[128 + j], z[192 + j], z[256 + j] = SingleSbox(
+            Y[0 + j], Y[64 + j], Y[128 + j], Y[192 + j], Y[256 + j]
+        )
+    return z
 
-    Args:
-        Y (list): 320 bits input
-
-    Returns:
-        list: 320 bits output
-    """
-    Z = [R(0) for i in range(320)]
-    # 5 bits as a block, each block uses a 5-bits sbox
-    for j in range(64):
-        Z[0 + j], Z[64 + j], Z[128 + j], Z[192 + j] , Z[256 + j] = SingleSbox(Y[0 + j], Y[64 + j], Y[128 + j], Y[192 + j], Y[256+j])
-    return Z
 
 def InvSbox(Y):
-    """inverse of the 320 bits sbox
+    """Apply inverse Ascon S-box layer to a 320-bit state."""
+    z = [_zero_like(Y[0]) for _ in range(STATE_SIZE)]
+    for j in range(LANE_SIZE):
+        z[0 + j], z[64 + j], z[128 + j], z[192 + j], z[256 + j] = InvSingleSbox(
+            Y[0 + j], Y[64 + j], Y[128 + j], Y[192 + j], Y[256 + j]
+        )
+    return z
 
-    Args:
-        Y (list): 320 bits input
-
-    Returns:
-        list: 320 bits output
-    """
-    Z = [R(0) for i in range(320)]
-    # 5 bits as a block, each block uses a 5-bits sbox
-    for j in range(64):
-        Z[0 + j], Z[64 + j], Z[128 + j], Z[192 + j] , Z[256 + j] = InvSingleSbox(Y[0 + j], Y[64 + j], Y[128 + j], Y[192 + j], Y[256+j])
-    return Z
 
 def addConst(X, r):
-    """add a const to input X
-
-    Args:
-        X (list): 320 bits input
-        r (int): const index
-
-    Returns:
-        list: 320 bits output
-    """
-    # the chosen list of the consts
-    constant = [0xf0, 0xe1, 0xd2, 0xc3, 0xb4, 0xa5, 0x96, 0x87, 0x78, 0x69,
-            0x5a, 0x4b]
-    base = 184
+    """XOR round constant to lane 2 of the state."""
+    out = list(X)
+    base = 64 * 2 + (64 - 8)
+    rc = ROUND_CONSTANTS[r]
     for i in range(8):
-        # choose the const according to the index r
-        if constant[r] >> (7 - i) & 0x1:
-            X[base + i] += 1
-    return X
+        if (rc >> (7 - i)) & 1:
+            out[base + i] = _xor2(out[base + i], 1)
+    return out
+
 
 def round(X, r):
-    """round function
-
-    Args:
-        X (list): 320 bits input
-        r (int): the number of rounds
-
-    Returns:
-        list: 320 bits output
-    """
-    # n rounds
+    """Apply r forward Ascon rounds."""
+    out = list(X)
     for i in range(r):
-        # a round contains 3 parts
-        X = addConst(X, i)
-        X = Sbox(X)
-        X = Matrix(X)
-    return X
-    
-def Invround(X,r):
-    """inverse of the round function
+        out = addConst(out, i)
+        out = Sbox(out)
+        out = Matrix(out)
+    return out
 
-    Args:
-        X (list): 320 bits input
 
-    Returns:
-        list: 320 bits output
-    """
-    # 2 rounds
-    for i in range(r):
-        # a round contains 3 parts
-        X = InvMatrix(X)
-        X = InvSbox(X)
-        X = addConst(X, i) 
-    return X
+def Invround(X, r):
+    """Apply inverse of r Ascon rounds."""
+    out = list(X)
+    for i in range(r - 1, -1, -1):
+        out = InvMatrix(out)
+        out = InvSbox(out)
+        out = addConst(out, i)
+    return out
+
 
 def print_state(X: list, state_x=64, state_y=5) -> None:
-    """print a state in column form
-
-    Args:
-        X (list): input state
-    """
-    # print 5*64 columns
+    """Print state in binary lanes and hex lanes."""
     for y in range(state_y):
-        #print("\n")
         lane_print = ""
         for x in range(state_x):
-            # now start convert binary column to int
-            # get the binary column
-            lane_print += str(X[index_xy(x,y)]) if X[index_xy(x,y)] else "0"
+            lane_print += str(X[index_xy(x, y)]) if X[index_xy(x, y)] else "0"
         print(lane_print)
     print("------")
     for y in range(state_y):
-        #print("\n")
         lane_print_0x = "0x"
         for x in range(0, state_x, 4):
-            # now start convert binary column to int
-            # get the binary column
             tmp = ""
             for i in range(4):
-                tmp += str(X[index_xy(x+i,y)]) if X[index_xy(x+i,y)] else "0"
+                tmp += str(X[index_xy(x + i, y)]) if X[index_xy(x + i, y)] else "0"
             lane_print_0x += hex(int(tmp, 2)).upper()[2:]
         print(lane_print_0x)
     print("------")
 
+
 def index_xy(x: int, y: int) -> int:
-    """return the index of coordinates x, y
-
-    Args:
-        x (int): x coordinate
-        y (int): y coordinate
-
-    Returns:
-        int: index of x, y
-    """
-    x, y = x%64, y%5
+    x, y = x % 64, y % 5
     return 64 * y + x
 
+
 def hex2bin(Hex_in, Bin_len=64):
-    Bin_out = []
-    for j in range(Bin_len):
-        Bin_out.append(Hex_in >> ( Bin_len -1 - j ) & 0x1)
-    return Bin_out
+    return [(Hex_in >> (Bin_len - 1 - j)) & 0x1 for j in range(Bin_len)]
 
-def index_z(z: int)-> int:
-    """return the index of coordinates z
 
-    Args:
-        z (int): z coordinate
+def index_z(z: int) -> int:
+    return (z + 64) % 64
 
-    Returns:
-        int: index of z
-    """
-    z = (z + 64)%64
-    return z
 
-def bin2int(a:list) -> int:
-    """把[1,0,1,0..,0]这类二进制list转成int
-    """
-    b = ""
-    for i in a:
-        b += str(i)
-    return int(b, 2)
+def bin2int(a: list) -> int:
+    return int("".join(str(i) for i in a), 2)
 
-def location2binvalue(location:list):
-    bin_v = [0 for i in range(64) ]
+
+def location2binvalue(location: list):
+    bin_v = [0 for _ in range(64)]
     for i in range(64):
         if i in location:
             bin_v[i] = 1
     print(bin_v)
     return bin_v
 
-def binvalue2location(bin_v:list):
+
+def binvalue2location(bin_v: list):
     loc_v = []
     for i in range(64):
         if bin_v[i] == 1:
@@ -309,111 +249,32 @@ def binvalue2location(bin_v:list):
 
 
 def print_x(X: list, state_x=64) -> None:
-    """print a state in column form
-
-    Args:
-        X (list): input row
-    """
-    # print a row
-    lane_print = ""
-    for x in range(state_x):
-        lane_print += str(X[x]) if X[x] else "0"
-    # print(lane_print)
-    # print("------")
     lane_print_0x = "0x"
     for x in range(0, state_x, 4):
         tmp = ""
         for i in range(4):
-            tmp += str(X[x+i]) if X[x+i] else "0"
+            tmp += str(X[x + i]) if X[x + i] else "0"
         lane_print_0x += hex(int(tmp, 2)).upper()[2:]
-    # print(lane_print_0x)
-    # print("------")
     return lane_print_0x
+
 
 def hex_list_to_bit_list(hex_list):
     bit_list = []
     for hex_num in hex_list:
-        # 将每个16进制数转换为64位的二进制字符串，并去掉前缀'0b'
-        hex_num = int(hex_num,16)
-        bit_str = bin(hex_num)[2:].zfill(64)
-        # 将二进制字符串转换为列表，并添加到最终的位列表中
+        bit_str = bin(int(hex_num, 16))[2:].zfill(64)
         bit_list.extend([int(bit) for bit in bit_str])
     return bit_list
 
-def convert_diff_to_bit_list(Diff):
-    bit_lists = []
-    for hex_list in Diff:
-        bit_list = hex_list_to_bit_list(hex_list)
-        bit_lists.append(bit_list)
-    return bit_lists
 
-if __name__ == '__main__':
-    R = declare_ring([Block('X', 320),'u'], globals() )
-    Diff = [R(0) for r in range(9)]
-    ############# 4rSFS ############## 
-    Diff[0]   = [0x9000000000040000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000]
-    Diff[1]    = [0x9000000000040000,
-                0x9000000000040000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000]
-    Diff[2]    = [0x1040120900040000,
-                0x1000080001040004,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000]
-    Diff[3]   = [
-                0x10000A0800040004,
-                0x0040120901040004,
-                0x1000080001040004,
-                0x10401A0101040004,
-                0x1040100100000000
-                ]
-    
-    Diff[4]    = [0x904088490145a084,
-                0x10428a4101248000,
-                0x08400c2001821006,
-                0x114602278c44c186,
-                0x10e0902102082008]
-    
-    Diff[5]   = [
-                0x916488078DEC710E,
-                0x88A41A6C83EBC10E,
-                0x08C014620EEA3186,
-                0x19020C6304EBF008,
-                0x01C41A6F8F25E182
-                ]
-    Diff[6]    = [0xc1824ac20aa400cb,
-                0x14831e8a81a4814e,
-                0x14831e0281a48183,
-                0xe30040611a1b4881,
-                0x320000ab913b484c]
-    
-    Diff[7]   = [0xF7835EEB9BBFC9CF,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000000000000000
-                ]
-    Diff[8] = [
-                0x0000000000000000,
-                0x0000001000000000,
-                0x0000000000000000,
-                0x0000000000000000,
-                0x0000001000000000
-    ]
-    
-    diff_bit_lists = convert_diff_to_bit_list(Diff)
-    out_first = diff_bit_lists[8]
-    
-    for i in range(320):
-        if out_first[i] ==1:
-            out_first[i] = R(1)
-        else:
-            out_first[i] = R(0)
-    out_first = Matrix(out_first)
-    print(print_state(out_first))
+def convert_diff_to_bit_list(Diff):
+    return [hex_list_to_bit_list(hex_list) for hex_list in Diff]
+
+
+if __name__ == "__main__":
+    # Quick self-check in a Boolean ring.
+    R = declare_ring([Block("X", 320), "u"], globals())
+    sample = [R(0) for _ in range(320)]
+    sample[0] = R(1)
+    y = Matrix(sample)
+    x = InvMatrix(y)
+    print("Matrix/InvMatrix self-check:", all(x[i] == sample[i] for i in range(320)))

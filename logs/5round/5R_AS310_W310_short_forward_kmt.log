@@ -1,0 +1,48 @@
+we have arrived here
+#Round: 5, #as =: 310, START:
+#Mode: short-then-extend
+#SearchSegment: [0, 3]
+#ExtendCheck: search first 4 rounds [0, 3], then extend/check round 4
+New DC Verify Model Constructed:) var_num:3840, clause_num:22519
+START: no.1
+Candidate no.1 rejected and banned.
+START: no.2
+Candidate no.2 rejected and banned.
+START: no.3
+Candidate no.3 rejected and banned.
+START: no.4
+Candidate no.4 rejected and banned.
+START: no.5
+Candidate no.5 rejected and banned.
+START: no.6
+Candidate no.6 rejected and banned.
+START: no.7
+Candidate no.7 rejected and banned.
+START: no.8
+Candidate no.8 rejected and banned.
+START: no.9
+Candidate no.9 rejected and banned.
+START: no.10
+Candidate no.10 rejected and banned.
+START: no.11
+Candidate no.11 rejected and banned.
+START: no.12
+Candidate no.12 rejected and banned.
+START: no.13
+Candidate no.13 rejected and banned.
+START: no.14
+Candidate no.14 rejected and banned.
+START: no.15
+Candidate no.15 rejected and banned.
+START: no.16
+Candidate no.16 rejected and banned.
+START: no.17
+Candidate no.17 rejected and banned.
+START: no.18
+Candidate no.18 rejected and banned.
+START: no.19
+Candidate no.19 rejected and banned.
+START: no.20
+Candidate no.20 rejected and banned.
+Search runtime(excluding model build): 104.012311 s
+__________End____________ (found 0 right pair(s))

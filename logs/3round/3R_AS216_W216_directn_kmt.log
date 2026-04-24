@@ -1,0 +1,11 @@
+we have arrived here
+#Round: 3, #as =: 216, START:
+#Mode: direct-n
+#SearchSegment: [0, 2]
+#ExtendCheck: none (direct search over full range)
+New DC Verify Model Constructed:) var_num:2880, clause_num:16527
+START: no.1
+VALID rightpair found at no.1
+VALID rightpair has been saved to /home/hnli/Ascon-collision-search/result/3round/AS216_W216_3round_final_rightpair_no1.log
+Search runtime(excluding model build): 2.153869 s
+__________End____________ (found 1 right pair(s))

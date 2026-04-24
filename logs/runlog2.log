@@ -1,4 +1,0 @@
-nohup: ignoring input
-/home/user/lhn/fast_verify_new_model/code/run.sh: line 25: 43456 Killed                  run_task 4 310 20 0 1
-/home/user/lhn/fast_verify_new_model/code/run.sh: line 26: syntax error near unexpected token `&'
-/home/user/lhn/fast_verify_new_model/code/run.sh: line 26: ` & '
