@@ -1,6 +1,6 @@
 # Ascon-collision-search
 
-This project verifies the validity of Ascon differential trails and prints corresponding right pairs from SAT solutions.
+This project verifies the validity of Ascon collinding trails and generates corresponding right pairs from SAT tools.
 
 ## Project Structure
 
