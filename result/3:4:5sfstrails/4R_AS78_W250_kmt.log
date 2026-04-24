@@ -1,0 +1,8 @@
+we have arrived here
+#Round: 4, #as =: 78, START:
+New DC Verify Model Constructed:) var_num:3840, clause_num:22795
+START: no.1
+cost: 32.663520 s
+Valid!
+Output has been saved to /home/user/lhn/fast_verify_new_model/result/4round_final_rightpair_no1.log
+cost: 34.559910 s
